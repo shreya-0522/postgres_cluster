@@ -1,0 +1,180 @@
+---
+# tasks file for postgresql-patroni
+
+- name: Update APT packages
+  apt:
+    update_cache: yes
+
+- name: Set hostname
+  hostname:
+    name: "nodeNUMBER"
+
+- name: Install net-tools
+  apt:
+    name: net-tools
+    state: present
+
+- name: Install PostgreSQL and dependencies
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - postgresql
+    - postgresql-server-dev-14
+
+- name: Stop PostgreSQL service
+  systemd:
+    name: postgresql
+    state: stopped
+
+# - name: Create symbolic links for PostgreSQL binaries
+#   file:
+#     src: "/usr/lib/postgresql/14/bin/{{ item }}"
+#     dest: "/usr/sbin/{{ item | basename }}"
+#     state: link
+#   with_fileglob: "/usr/lib/postgresql/14/bin/*"
+
+
+- name: Create Symbolic Links
+  shell: |
+    ln -s /usr/lib/postgresql/14/bin/* /usr/sbin/ | true
+  register: symbolic_links_output
+
+- name: Display Symbolic Links Output
+  debug:
+    var: symbolic_links_output.stdout_lines
+
+- name: Install Python and pip
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python3
+    - python3-pip
+
+- name: Install additional Python packages
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python3-testresources
+
+- name: Upgrade setuptools
+  pip:
+    name: setuptools
+    state: latest
+
+- name: Install Python packages using pip
+  pip:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - psycopg2
+    - patroni
+    - python-etcd
+
+#------------ Setup on  etcd node ---------------
+
+- name: Update APT packages
+  apt:
+    update_cache: yes
+
+- name: Install net-tools
+  apt:
+    name: net-tools
+    state: present
+
+- name: Install etcd
+  apt:
+    name: etcd
+    state: present
+
+#-----------Setup on  haproxynode
+
+- name: Update APT packages
+  apt:
+    update_cache: yes
+
+- name: Install net-tools
+  apt:
+    name: net-tools
+    
+- name: Install HAProxy
+  apt:
+   name: haproxy
+   state: present
+
+#---------------------Configure etcd on the etcdnode
+
+- name: Create etcd configuration file
+  template:
+    src: etcd_config.j2
+    dest: /etc/default/etcd
+
+- name: Restart etcd service
+  systemd:
+    name: etcd
+    state: restarted
+
+#---------------
+
+- name: Create replication user
+  shell: |
+      sudo -u postgres psql -c "CREATE ROLE {{ replication_user }} WITH REPLICATION PASSWORD {{ replica_password }} LOGIN;"
+
+- name: Grant replication privileges to replicator user
+  shell:  |
+    sudo -u postgres psql -c "ALTER USER {{ replication_user }} WITH SUPERUSER;" 
+
+- name: Grant replication privileges to replicator user
+  shell:  |
+    sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD {{ postgres_password }};" 
+
+#----------------------------------Configure Patroni on the node1, on the node2 and on the node3:
+
+#node-1
+- name: Create Patroni configuration file
+  template:
+    src: patroni-node1.yml.j2
+    dest: /etc/patroni.yml
+
+#node-2
+- name: Create Patroni configuration file
+  template:
+    src: patroni-node2.yml.j2
+    dest: /etc/patroni.yml
+
+#node-3
+- name: Create Patroni configuration file
+  template:
+    src: patroni-node3.yml.j2
+    dest: /etc/patroni.yml
+
+- name: Create directory for Patroni data
+  file:
+    path: /data/patroni
+    state: directory
+    mode: 0755
+    owner: postgres
+    group: postgres
+
+- name: changing main dir permission
+  shell: |
+      sudo chown -R postgres:postgres /data/patroni
+
+- name: Set permissions for /data/patroni
+  shell: |
+    sudo chmod 700 /data/patroni 
+
+- name: Create Patroni systemd service file
+  template:
+    src: patroni.servicefile.j2
+    dest: /etc/systemd/system/patroni.service
+
+#------ 
+
+- name: Restart HAProxy service
+  systemd:
+    name: haproxy
+    state: restarted
+
